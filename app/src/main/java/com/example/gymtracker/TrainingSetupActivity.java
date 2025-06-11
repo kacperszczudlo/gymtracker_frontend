@@ -1,109 +1,208 @@
 package com.example.gymtracker;
 
-import android.app.Dialog;
-import android.content.Intent;
 import android.content.SharedPreferences;
-import android.database.Cursor;
 import android.os.Bundle;
 import android.util.Log;
-import android.view.View;
-import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.TextView;
+import android.widget.Toast;
+
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
+
 import com.google.android.material.bottomsheet.BottomSheetBehavior;
 import com.google.android.material.bottomsheet.BottomSheetDialog;
 
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
-import java.util.Date;
-import java.util.Locale;
+
+import api.model.ApiClient;
+import api.model.ApiService;
+import api.model.ExerciseRequest;
+import api.model.TrainingLogRequest;
+
+import retrofit2.Call;
+import retrofit2.Callback;
+import retrofit2.Response;
 
 public class TrainingSetupActivity extends AppCompatActivity {
+
     private RecyclerView recyclerView;
     private ExerciseAdapter adapter;
     private ArrayList<Exercise> exerciseList;
-    private DatabaseHelper dbHelper;
     private String dayName;
-    private long dayId;
     private int userId;
     private boolean isLogEdit;
     private String logDate;
+
+    private ApiService apiService;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_training_setup);
+
+        apiService = ApiClient.getClient(this).create(ApiService.class);
+
         isLogEdit = "EDIT_LOG_ENTRIES".equals(getIntent().getStringExtra("MODE"));
         logDate = getIntent().getStringExtra("DATE");
 
-        dbHelper = new DatabaseHelper(this);
         recyclerView = findViewById(R.id.exerciseRecyclerView);
         Button addExerciseButton = findViewById(R.id.addExerciseButton);
         Button nextButton = findViewById(R.id.nextButton);
         TextView trainingTitle = findViewById(R.id.trainingTitleTextView);
-        boolean isEditableSeriesFields = isLogEdit;
 
         SharedPreferences prefs = getSharedPreferences("user_prefs", MODE_PRIVATE);
         userId = prefs.getInt("user_id", -1);
 
         dayName = getIntent().getStringExtra("DAY_NAME");
-        dayId = getIntent().getLongExtra("DAY_ID", -1);
         trainingTitle.setText("Trening - " + dayName);
 
         exerciseList = new ArrayList<>();
         if (getIntent().hasExtra("EXERCISE_LIST")) {
             exerciseList = getIntent().getParcelableArrayListExtra("EXERCISE_LIST");
-        } else {
-            loadExercisesForDay();
+        } else if (isLogEdit) {
+            loadExercisesFromBackend();
         }
 
         adapter = new ExerciseAdapter(
                 exerciseList,
                 this::removeExercise,
-                true, // 🔴 Pozostawiamy możliwość dodawania/usuwania ćwiczeń w TrainingSetupActivity
+                true,
                 (dayId, exerciseName, seriesPosition) -> {
-                    if (dayId != -1) {
-                        DatabaseHelper dbHelper = new DatabaseHelper(this);
-                        dbHelper.deleteDayExercise(dayId, exerciseName, seriesPosition);
-                        Log.d("TrainingSetupActivity", "Usunięto serię: " + exerciseName + " (pozycja: " + seriesPosition + ")");
+                    Exercise exercise = findExerciseByName(exerciseName);
+                    if (exercise != null && seriesPosition >= 0 && seriesPosition < exercise.getSeriesList().size()) {
+                        exercise.getSeriesList().remove(seriesPosition);
+                        adapter.notifyDataSetChanged();
                     }
                 },
-                dayId,
-                isEditableSeriesFields // 🔴 Tu przekazujemy czy pola w seriach mają być edytowalne!
+                -1,
+                isLogEdit
         );
+
+
+
 
         recyclerView.setLayoutManager(new LinearLayoutManager(this));
         recyclerView.setAdapter(adapter);
 
         addExerciseButton.setOnClickListener(v -> showExerciseDialog());
 
-        nextButton.setOnClickListener(v -> {
-            Log.d("DEBUG_SAVE", "Saving exercises: " + exerciseList.size());
-            for (Exercise ex : exerciseList) {
-                Log.d("DEBUG_SAVE", "Exercise: " + ex.getName() + ", Series: " + ex.getSeriesList().size());
-                for (Series s : ex.getSeriesList()) {
-                    Log.d("DEBUG_SAVE", "  Series - Reps: " + s.getReps() + ", Weight: " + s.getWeight());
+        nextButton.setOnClickListener(v -> saveTrainingLog());
+    }
+
+    private Exercise findExerciseByName(String name) {
+        for (Exercise e : exerciseList) {
+            if (e.getName().equals(name)) return e;
+        }
+        return null;
+    }
+
+
+    private void loadExercisesFromBackend() {
+        apiService.getTrainingLog(userId, logDate, dayName).enqueue(new Callback<api.model.TrainingLog>() {
+            @Override
+            public void onResponse(Call<api.model.TrainingLog> call, Response<api.model.TrainingLog> response) {
+                if (response.isSuccessful() && response.body() != null) {
+                    exerciseList.clear();
+                    // Map from response.body() to exerciseList
+                    for (api.model.LogExercise logExercise : response.body().getExercises()) {
+                        Exercise exercise = new Exercise(logExercise.getExerciseName());
+                        for (api.model.LogSeries logSeries : logExercise.getSeriesList()) {
+                            int reps = logSeries.getReps();
+                            float weight = logSeries.getWeight() != null ? logSeries.getWeight().floatValue() : 0f;
+                            exercise.addSeries(new Series(reps, weight));
+                        }
+                        exerciseList.add(exercise);
+                    }
+
+                    adapter.notifyDataSetChanged();
+                } else {
+                    Toast.makeText(TrainingSetupActivity.this, "Błąd wczytywania ćwiczeń", Toast.LENGTH_SHORT).show();
                 }
             }
-            if (isLogEdit) {
-                boolean ok = dbHelper.saveLogSeries(userId, logDate, dayName, exerciseList);
-                Log.d("DEBUG_PLAN", "saveLogSeries -> " + ok);
-            } else {
-                // 🔴 Zamiast dzisiejszej daty, użyj daty logu/daty dnia, np. logDate
-                String validFromDate = logDate != null ? logDate : new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(new Date());
-                long planId = dbHelper.saveTrainingPlan(userId, dayName, exerciseList, validFromDate);
-                Log.d("DEBUG_PLAN", "saveTrainingPlan planId=" + planId);
-            }
-            Intent intent = new Intent(TrainingSetupActivity.this, TrainingMainActivity.class);
-            startActivity(intent);
-            setResult(RESULT_OK);
-            finish();
-        });
 
+            @Override
+            public void onFailure(Call<api.model.TrainingLog> call, Throwable t) {
+                Toast.makeText(TrainingSetupActivity.this, "Błąd połączenia", Toast.LENGTH_SHORT).show();
+            }
+        });
     }
+
+    private void saveTrainingLog() {
+        if (exerciseList.isEmpty()) {
+            // Usuń log, jeśli nie ma ćwiczeń
+            apiService.getTrainingLog(userId, logDate, dayName).enqueue(new Callback<api.model.TrainingLog>() {
+                @Override
+                public void onResponse(Call<api.model.TrainingLog> call, Response<api.model.TrainingLog> response) {
+                    if (response.isSuccessful() && response.body() != null) {
+                        int logId = response.body().getId();
+                        apiService.deleteTrainingLog(logId).enqueue(new Callback<Void>() {
+                            @Override
+                            public void onResponse(Call<Void> call, Response<Void> response) {
+                                Toast.makeText(TrainingSetupActivity.this, "Pusty trening usunięty!", Toast.LENGTH_SHORT).show();
+                                setResult(RESULT_OK);
+                                finish();
+                            }
+
+                            @Override
+                            public void onFailure(Call<Void> call, Throwable t) {
+                                Toast.makeText(TrainingSetupActivity.this, "Błąd połączenia", Toast.LENGTH_SHORT).show();
+                            }
+                        });
+                    } else {
+                        // Brak logu – po prostu zamknij aktywność
+                        setResult(RESULT_OK);
+                        finish();
+                    }
+                }
+
+                @Override
+                public void onFailure(Call<api.model.TrainingLog> call, Throwable t) {
+                    Toast.makeText(TrainingSetupActivity.this, "Błąd połączenia", Toast.LENGTH_SHORT).show();
+                }
+            });
+            return;
+        }
+
+        // Normalne zapisywanie, jeśli są ćwiczenia
+        ArrayList<api.model.LogExerciseRequest> exerciseRequests = new ArrayList<>();
+        for (Exercise exercise : exerciseList) {
+            ArrayList<api.model.LogSeriesRequest> seriesRequests = new ArrayList<>();
+            for (Series s : exercise.getSeriesList()) {
+                api.model.LogSeriesRequest seriesRequest = new api.model.LogSeriesRequest(
+                        s.getReps(),
+                        (double) s.getWeight()
+                );
+                seriesRequests.add(seriesRequest);
+            }
+
+            api.model.LogExerciseRequest exReq = new api.model.LogExerciseRequest(exercise.getName(), seriesRequests);
+            exerciseRequests.add(exReq);
+        }
+
+        TrainingLogRequest request = new TrainingLogRequest(userId, logDate, dayName, exerciseRequests);
+
+        apiService.saveTrainingLog(request).enqueue(new Callback<Void>() {
+            @Override
+            public void onResponse(Call<Void> call, Response<Void> response) {
+                if (response.isSuccessful()) {
+                    Toast.makeText(TrainingSetupActivity.this, "Trening zapisany pomyślnie!", Toast.LENGTH_SHORT).show();
+                    setResult(RESULT_OK);
+                    finish();
+                } else {
+                    Toast.makeText(TrainingSetupActivity.this, "Błąd zapisu treningu", Toast.LENGTH_SHORT).show();
+                }
+            }
+
+            @Override
+            public void onFailure(Call<Void> call, Throwable t) {
+                Toast.makeText(TrainingSetupActivity.this, "Błąd połączenia", Toast.LENGTH_SHORT).show();
+            }
+        });
+    }
+
+
 
     private void showExerciseDialog() {
         BottomSheetDialog dialog = new BottomSheetDialog(this, R.style.BottomSheetDialogTheme);
@@ -112,52 +211,49 @@ public class TrainingSetupActivity extends AppCompatActivity {
         RecyclerView dialogRecyclerView = dialog.findViewById(R.id.dialogExerciseRecyclerView);
         Button cancelButton = dialog.findViewById(R.id.cancelButton);
 
-        ArrayList<String> exercises = new ArrayList<>();
-        Cursor cursor = dbHelper.getExercises();
-        while (cursor.moveToNext()) {
-            exercises.add(cursor.getString(cursor.getColumnIndexOrThrow("name")));
-        }
-        cursor.close();
+        apiService.getExercises().enqueue(new Callback<java.util.List<api.model.ExerciseDto>>() {
+            @Override
+            public void onResponse(Call<java.util.List<api.model.ExerciseDto>> call, Response<java.util.List<api.model.ExerciseDto>> response) {
+                if (response.isSuccessful() && response.body() != null) {
+                    java.util.List<String> exerciseNames = new ArrayList<>();
+                    for (api.model.ExerciseDto dto : response.body()) {
+                        exerciseNames.add(dto.getName());
+                    }
+                    ExerciseDialogAdapter dialogAdapter = new ExerciseDialogAdapter(new ArrayList<>(exerciseNames), exerciseName -> {
+                        exerciseList.add(new Exercise(exerciseName));
+                        adapter.notifyDataSetChanged();
+                        dialog.dismiss();
+                    });
 
-        ExerciseDialogAdapter dialogAdapter = new ExerciseDialogAdapter(exercises, exerciseName -> {
-            exerciseList.add(new Exercise(exerciseName));
-            adapter.notifyDataSetChanged();
-            dialog.dismiss();
+                    if (dialogRecyclerView != null) {
+                        dialogRecyclerView.setLayoutManager(new LinearLayoutManager(TrainingSetupActivity.this));
+                        dialogRecyclerView.setAdapter(dialogAdapter);
+                    }
+                } else {
+                    Toast.makeText(TrainingSetupActivity.this, "Błąd wczytywania ćwiczeń", Toast.LENGTH_SHORT).show();
+                }
+            }
+
+            @Override
+            public void onFailure(Call<java.util.List<api.model.ExerciseDto>> call, Throwable t) {
+                Toast.makeText(TrainingSetupActivity.this, "Błąd połączenia", Toast.LENGTH_SHORT).show();
+            }
         });
-
-        if (dialogRecyclerView != null) {
-            dialogRecyclerView.setLayoutManager(new LinearLayoutManager(this));
-            dialogRecyclerView.setAdapter(dialogAdapter);
-        }
 
         if (cancelButton != null) {
             cancelButton.setOnClickListener(v -> dialog.dismiss());
         }
 
-        dialog.show();
-
-        View bottomSheet = dialog.findViewById(com.google.android.material.R.id.design_bottom_sheet);
+        android.view.View bottomSheet = dialog.findViewById(com.google.android.material.R.id.design_bottom_sheet);
         if (bottomSheet != null) {
-            BottomSheetBehavior<View> behavior = BottomSheetBehavior.from(bottomSheet);
-            behavior.setState(BottomSheetBehavior.STATE_EXPANDED);
-            bottomSheet.setLayoutParams(bottomSheet.getLayoutParams());
+            BottomSheetBehavior.from(bottomSheet).setState(BottomSheetBehavior.STATE_EXPANDED);
         }
-    }
 
-    private void loadExercisesForDay() {
-        if (isLogEdit) {
-            exerciseList.addAll(dbHelper.getLogExercises(userId, logDate, dayName));
-        } else {
-            exerciseList.addAll(dbHelper.getDayExercises(dayId));
-        }
+        dialog.show();
     }
 
     private void removeExercise(int position) {
         exerciseList.remove(position);
         adapter.notifyItemRemoved(position);
-    }
-
-    public long getDayId() {
-        return dayId;
     }
 }

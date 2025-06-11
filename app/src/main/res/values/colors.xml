@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="black">#FF000000</color>
-    <color name="white">#FFFFFFFF</color>
+    <!-- ... istniejące kolory ... -->
     <color name="green">#4CAF50</color>
-    <color name="grey">#616161</color>
     <color name="red">#F44336</color>
+    <color name="chart_blue">#03A9F4</color> <!-- Ogólny niebieski dla wykresów -->
+    <color name="chart_red">#E91E63</color> <!-- Dla wyciskania -->
+    <color name="chart_green_exercise">#8BC34A</color> <!-- Dla przysiadów -->
+    <color name="chart_yellow">#FFEB3B</color> <!-- Dla martwego ciągu -->
 </resources>

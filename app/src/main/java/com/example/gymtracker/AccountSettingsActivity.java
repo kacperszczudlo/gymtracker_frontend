@@ -15,7 +15,7 @@ public class AccountSettingsActivity extends AppCompatActivity {
 
         // Initialize buttons
         Button trainingGoalsButton = findViewById(R.id.trainingGoalsButton);
-        Button updatePlanButton = findViewById(R.id.updatePlanButton);
+
         Button updateMeasurementsButton = findViewById(R.id.updateMeasurementsButton);
         ImageButton menuButton = findViewById(R.id.menuButton);
         ImageButton homeButton = findViewById(R.id.homeButton);
@@ -38,10 +38,7 @@ public class AccountSettingsActivity extends AppCompatActivity {
             startActivity(intent);
         });
 
-        updatePlanButton.setOnClickListener(v -> {
-            Intent intent = new Intent(AccountSettingsActivity.this, TrainingDaysActivity.class);
-            startActivity(intent);
-        });
+
 
         menuButton.setOnClickListener(v -> {
             Toast.makeText(this, "Jesteś już w ustawieniach", Toast.LENGTH_SHORT).show();

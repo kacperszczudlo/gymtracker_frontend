@@ -26,14 +26,6 @@
         android:backgroundTint="#4CAF50"
         android:layout_marginBottom="8dp" />
 
-    <Button
-        android:id="@+id/updatePlanButton"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="Aktualizuj plan"
-        android:textColor="#FFFFFF"
-        android:backgroundTint="#4CAF50"
-        android:layout_marginBottom="8dp" />
 
     <Button
         android:id="@+id/updateMeasurementsButton"

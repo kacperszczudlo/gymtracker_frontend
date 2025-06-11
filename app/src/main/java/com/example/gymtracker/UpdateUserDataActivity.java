@@ -1,11 +1,12 @@
 package com.example.gymtracker;
 
-import android.content.ContentValues;
+// import android.content.ContentValues; // Już niepotrzebne
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.database.Cursor;
-import android.database.sqlite.SQLiteDatabase;
+// import android.database.Cursor; // Już niepotrzebne
+// import android.database.sqlite.SQLiteDatabase; // Już niepotrzebne
 import android.os.Bundle;
+import android.util.Log; // Dodaj, jeśli potrzebne
 import android.util.Patterns;
 import android.widget.Button;
 import android.widget.EditText;
@@ -13,59 +14,64 @@ import android.widget.ImageButton;
 import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
 
+import api.model.ApiClient; // DODAJ
+import api.model.ApiService; // DODAJ
+import api.model.UpdateUserProfileRequest; // DODAJ
+import retrofit2.Call; // DODAJ
+import retrofit2.Callback; // DODAJ
+import retrofit2.Response; // DODAJ
+
 public class UpdateUserDataActivity extends AppCompatActivity {
-    private DatabaseHelper dbHelper;
     private int userId;
-    private EditText usernameEditText, surnameEditText, emailEditText, passwordEditText;
+    private EditText usernameEditText, surnameEditText, emailEditText, passwordEditText; // passwordEditText to dla nowego hasła
+
+    private ApiService apiService; // DODAJEMY
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_update_user_data);
 
-        dbHelper = new DatabaseHelper(this);
+        apiService = ApiClient.getClient(this).create(ApiService.class); // DODAJEMY
+
         SharedPreferences prefs = getSharedPreferences("user_prefs", MODE_PRIVATE);
         userId = prefs.getInt("user_id", -1);
 
         if (userId == -1) {
             Toast.makeText(this, "Błąd użytkownika. Spróbuj ponownie się zalogować.", Toast.LENGTH_SHORT).show();
-            Intent intent = new Intent(this, LoginActivity.class);
-            intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
-            startActivity(intent);
+            // ... (przekierowanie do logowania)
             finish();
             return;
         }
 
-        // Initialize views
         usernameEditText = findViewById(R.id.usernameEditText);
         surnameEditText = findViewById(R.id.surnameEditText);
         emailEditText = findViewById(R.id.emailEditText);
-        passwordEditText = findViewById(R.id.passwordEditText);
+        passwordEditText = findViewById(R.id.passwordEditText); // To pole dla nowego hasła
         Button saveButton = findViewById(R.id.saveButton);
         ImageButton menuButton = findViewById(R.id.menuButton);
         ImageButton profileButton = findViewById(R.id.profileButton);
         ImageButton homeButton = findViewById(R.id.homeButton);
 
-        // Null checks for navigation buttons
-        if (menuButton == null || profileButton == null) {
-            Toast.makeText(this, "Błąd: Nie znaleziono przycisków nawigacji", Toast.LENGTH_SHORT).show();
+        // Null checks dla przycisków (jeśli potrzebne, zakładam, że są w layout)
+        if (menuButton == null || profileButton == null || homeButton == null || saveButton == null) {
+            Toast.makeText(this, "Błąd: Nie znaleziono przycisków interfejsu", Toast.LENGTH_SHORT).show();
+            // rozważ finish();
             return;
         }
 
-        // Load existing data
-        loadUserData();
+        loadUserDataFromPrefs(); // Zmieniona nazwa
 
-        // Set click listeners
-        saveButton.setOnClickListener(v -> saveUserData());
+        saveButton.setOnClickListener(v -> saveUserDataViaApi()); // Zmieniona nazwa
 
         menuButton.setOnClickListener(v -> {
             Intent intent = new Intent(UpdateUserDataActivity.this, AccountSettingsActivity.class);
             startActivity(intent);
         });
-
         profileButton.setOnClickListener(v -> {
             Intent intent = new Intent(UpdateUserDataActivity.this, UserProfileActivity.class);
             startActivity(intent);
+            finish(); // Zamknij bieżącą, aby UserProfileActivity odświeżyło dane
         });
         homeButton.setOnClickListener(v -> {
             Intent intent = new Intent(UpdateUserDataActivity.this, TrainingMainActivity.class);
@@ -73,25 +79,22 @@ public class UpdateUserDataActivity extends AppCompatActivity {
         });
     }
 
-    private void loadUserData() {
-        SQLiteDatabase db = dbHelper.getReadableDatabase();
-        Cursor cursor = db.query("users", new String[]{"username", "surname", "email"}, "user_id=?", new String[]{String.valueOf(userId)}, null, null, null);
-        if (cursor.moveToFirst()) {
-            usernameEditText.setText(cursor.getString(cursor.getColumnIndexOrThrow("username")));
-            surnameEditText.setText(cursor.getString(cursor.getColumnIndexOrThrow("surname")));
-            emailEditText.setText(cursor.getString(cursor.getColumnIndexOrThrow("email")));
-        }
-        cursor.close();
+    private void loadUserDataFromPrefs() {
+        SharedPreferences prefs = getSharedPreferences("user_prefs", MODE_PRIVATE);
+        usernameEditText.setText(prefs.getString("username", ""));
+        surnameEditText.setText(prefs.getString("surname", ""));
+        emailEditText.setText(prefs.getString("email", ""));
+        // Pole hasła zostawiamy puste, użytkownik wprowadza nowe, jeśli chce zmienić
     }
 
-    private void saveUserData() {
+    private void saveUserDataViaApi() {
         String username = usernameEditText.getText().toString().trim();
         String surname = surnameEditText.getText().toString().trim();
         String email = emailEditText.getText().toString().trim();
-        String password = passwordEditText.getText().toString().trim();
+        String newPassword = passwordEditText.getText().toString(); // Nie .trim() dla hasła
 
         if (username.isEmpty() || surname.isEmpty() || email.isEmpty()) {
-            Toast.makeText(this, "Wypełnij wszystkie pola", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Nazwa użytkownika, nazwisko i email są wymagane", Toast.LENGTH_SHORT).show();
             return;
         }
 
@@ -100,24 +103,64 @@ public class UpdateUserDataActivity extends AppCompatActivity {
             return;
         }
 
-        SQLiteDatabase db = dbHelper.getWritableDatabase();
-        ContentValues values = new ContentValues();
-        values.put("username", username);
-        values.put("surname", surname);
-        values.put("email", email);
-        if (!password.isEmpty()) {
-            values.put("password", password);
-        }
+        // Jeśli pole hasła jest puste, wysyłamy null, aby backend wiedział, że nie zmieniamy hasła.
+        // Jeśli nie jest puste, wysyłamy jego zawartość.
+        String passwordToSend = newPassword.isEmpty() ? null : newPassword;
 
-        long result = db.update("users", values, "user_id=?", new String[]{String.valueOf(userId)});
-        if (result > 0) {
-            Toast.makeText(this, "Dane zaktualizowane", Toast.LENGTH_SHORT).show();
-            // Przejdź do UserProfileActivity
-            Intent intent = new Intent(UpdateUserDataActivity.this, UserProfileActivity.class);
-            startActivity(intent);
-            finish(); // Zamknij bieżącą aktywność
-        } else {
-            Toast.makeText(this, "Błąd podczas aktualizacji", Toast.LENGTH_SHORT).show();
-        }
+        UpdateUserProfileRequest request = new UpdateUserProfileRequest(username, surname, email, passwordToSend);
+        // Pola profilowe (gender, height, weight etc.) będą null w tym żądaniu,
+        // więc backend (jeśli jest dobrze napisany) nie powinien ich modyfikować.
+
+        Log.d("UpdateUserData", "Wysyłanie żądania aktualizacji dla userId: " + userId + " z username: " + username + ", email: " + email + ", hasło ustawione: " + (passwordToSend != null));
+
+        apiService.updateUserProfile(userId, request).enqueue(new Callback<Void>() {
+            @Override
+            public void onResponse(Call<Void> call, Response<Void> response) {
+                if (response.isSuccessful()) {
+                    Toast.makeText(UpdateUserDataActivity.this, "Dane zaktualizowane", Toast.LENGTH_SHORT).show();
+
+                    // Zaktualizuj dane w SharedPreferences
+                    SharedPreferences prefs = getSharedPreferences("user_prefs", MODE_PRIVATE);
+                    SharedPreferences.Editor editor = prefs.edit();
+                    editor.putString("username", username);
+                    editor.putString("surname", surname);
+                    editor.putString("email", email);
+                    // NIE ZAPISUJEMY HASŁA W SHARED PREFERENCES
+                    editor.apply();
+
+                    Intent intent = new Intent(UpdateUserDataActivity.this, UserProfileActivity.class);
+                    intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP); // Aby odświeżyć UserProfileActivity
+                    startActivity(intent);
+                    finish();
+                } else {
+                    String errorMessage = "Błąd podczas aktualizacji";
+                    if (response.errorBody() != null) {
+                        try {
+                            String errorBodyStr = response.errorBody().string();
+                            // Tutaj możesz spróbować sparsować JSON z błędem, jeśli backend go zwraca
+                            // np. jeśli backend zwraca {"message": "Email zajęty"}
+                            Log.e("UpdateUserData", "Błąd serwera: " + response.code() + " Body: " + errorBodyStr);
+                            if (errorBodyStr.toLowerCase().contains("email") && errorBodyStr.toLowerCase().contains("zajęty")) {
+                                errorMessage = "Podany adres e-mail jest już używany.";
+                            } else {
+                                errorMessage = "Błąd serwera: " + response.code();
+                            }
+                        } catch (Exception e) {
+                            Log.e("UpdateUserData", "Błąd odczytu errorBody", e);
+                            errorMessage = "Błąd serwera: " + response.code();
+                        }
+                    } else {
+                        errorMessage = "Błąd serwera: " + response.code();
+                    }
+                    Toast.makeText(UpdateUserDataActivity.this, errorMessage, Toast.LENGTH_LONG).show();
+                }
+            }
+
+            @Override
+            public void onFailure(Call<Void> call, Throwable t) {
+                Toast.makeText(UpdateUserDataActivity.this, "Błąd połączenia: " + t.getMessage(), Toast.LENGTH_LONG).show();
+                Log.e("UpdateUserData", "Błąd połączenia", t);
+            }
+        });
     }
 }

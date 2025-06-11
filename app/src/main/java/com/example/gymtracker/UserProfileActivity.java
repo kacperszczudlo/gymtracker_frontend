@@ -2,24 +2,37 @@ package com.example.gymtracker;
 
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.database.Cursor;
 import android.os.Bundle;
 import android.text.SpannableString;
 import android.text.style.ForegroundColorSpan;
 import android.util.Log;
-import android.widget.Button;
+import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
 import com.example.gymtracker.databinding.ActivityUserProfileBinding;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Locale;
 
+import api.model.ApiClient;
+import api.model.ApiService;
+import api.model.BodyStatHistoryDto;
+import api.model.ExerciseExtremesDto;
+import retrofit2.Call;
+import retrofit2.Callback;
+import retrofit2.Response;
+
 public class UserProfileActivity extends AppCompatActivity {
     private ActivityUserProfileBinding binding;
-    private DatabaseHelper dbHelper;
     private int userId;
     private static final int REQUEST_CODE_SETTINGS = 1;
+
+    private ApiService apiService;
+    private BodyStatHistoryDto initialStatsApi = null;
+    private List<BodyStatHistoryDto> historyStatsApi = null;
+
+    private final String EXERCISE_BENCH_PRESS_NAME = "Wyciskanie sztangi"; // Nazwa ćwiczenia
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -27,7 +40,8 @@ public class UserProfileActivity extends AppCompatActivity {
         binding = ActivityUserProfileBinding.inflate(getLayoutInflater());
         setContentView(binding.getRoot());
 
-        dbHelper = new DatabaseHelper(this);
+        apiService = ApiClient.getClient(this).create(ApiService.class);
+
         SharedPreferences prefs = getSharedPreferences("user_prefs", MODE_PRIVATE);
         userId = prefs.getInt("user_id", -1);
         Log.d("UserProfileActivity", "User ID: " + userId);
@@ -39,12 +53,8 @@ public class UserProfileActivity extends AppCompatActivity {
             return;
         }
 
-        dbHelper.debugDatabase(userId);
-
-        String username = dbHelper.getUsername(userId);
-        binding.usernameTextView.setText(username != null ? username : "Brak danych");
-
-        displayProgressData();
+        String username = prefs.getString("username", "Brak danych");
+        binding.usernameTextView.setText(username);
 
         binding.fullProgressButton.setOnClickListener(v -> {
             Intent intent = new Intent(this, FullProgressActivity.class);
@@ -53,11 +63,11 @@ public class UserProfileActivity extends AppCompatActivity {
 
         binding.achievementsButton.setOnClickListener(v -> {
             Intent intent = new Intent(this, AchievementsActivity.class);
-            startActivityForResult(intent, REQUEST_CODE_SETTINGS);
+            startActivity(intent);
         });
 
         binding.accountSettingsButton.setOnClickListener(v -> {
-            Intent intent = new Intent(this, UpdateUserDataActivity.class);
+            Intent intent = new Intent(this, UpdateUserDataActivity.class); // Zmienione na UpdateUserDataActivity jeśli to ustawienia konta
             startActivityForResult(intent, REQUEST_CODE_SETTINGS);
         });
 
@@ -65,7 +75,9 @@ public class UserProfileActivity extends AppCompatActivity {
             SharedPreferences.Editor editor = prefs.edit();
             editor.clear();
             editor.apply();
-            startActivity(new Intent(this, MainActivity.class));
+            Intent intent = new Intent(this, MainActivity.class);
+            intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+            startActivity(intent);
             finish();
         });
 
@@ -73,120 +85,217 @@ public class UserProfileActivity extends AppCompatActivity {
             Intent intent = new Intent(this, AccountSettingsActivity.class);
             startActivityForResult(intent, REQUEST_CODE_SETTINGS);
         });
+
         binding.homeButton.setOnClickListener(v -> {
             startActivity(new Intent(this, TrainingMainActivity.class));
         });
+
         binding.profileButton.setOnClickListener(v -> {
-            // Already on profile
+            Toast.makeText(this, "Jesteś już na ekranie profilu", Toast.LENGTH_SHORT).show();
         });
     }
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == REQUEST_CODE_SETTINGS && resultCode == RESULT_OK) {
-            displayProgressData();
+        if (requestCode == REQUEST_CODE_SETTINGS) { // Odświeżaj niezależnie od resultCode, bo dane mogły się zmienić
+            fetchDataAndDisplayProgress(); // Odśwież dane wagowe i pomiarów
+            fetchBenchPressExtremes();    // Odśwież dane wyciskania
+            SharedPreferences prefs = getSharedPreferences("user_prefs", MODE_PRIVATE);
+            String updatedUsername = prefs.getString("username", "Brak danych");
+            binding.usernameTextView.setText(updatedUsername);
         }
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        displayProgressData();
+        fetchDataAndDisplayProgress(); // Pobiera dane wagowe, obwodu ramienia
+        fetchBenchPressExtremes();     // Pobiera dane dla wyciskania
+        SharedPreferences prefs = getSharedPreferences("user_prefs", MODE_PRIVATE);
+        String currentUsername = prefs.getString("username", "Brak danych");
+        binding.usernameTextView.setText(currentUsername);
     }
 
-    private void displayProgressData() {
-        float[] latestData = dbHelper.getLatestProfileData(userId); // [weight, armCirc, waistCirc, hipCirc, height]
-        float latestBenchPress = dbHelper.getLatestBenchPress(userId);
-        float initialBenchPress = dbHelper.getInitialBenchPress(userId);
+    private void fetchDataAndDisplayProgress() {
+        binding.progressWeightTextView.setText("Ładowanie...");
+        binding.progressArmCircTextView.setText("Ładowanie...");
 
-        float initialWeight = 0f;
-        Cursor goalsCursor = dbHelper.getUserGoals(userId);
-        if (goalsCursor.moveToFirst()) {
-            initialWeight = goalsCursor.getFloat(goalsCursor.getColumnIndexOrThrow(DatabaseHelper.COLUMN_START_WEIGHT));
+        initialStatsApi = null; // Resetuj przed każdym pobraniem
+        historyStatsApi = null; // Resetuj przed każdym pobraniem
+
+        apiService.getInitialBodyStat(userId).enqueue(new Callback<BodyStatHistoryDto>() {
+            @Override
+            public void onResponse(Call<BodyStatHistoryDto> call, Response<BodyStatHistoryDto> responseInitial) {
+                if (responseInitial.isSuccessful() && responseInitial.body() != null) {
+                    initialStatsApi = responseInitial.body();
+                    Log.d("UserProfileActivity", "Initial stats API: " + (initialStatsApi != null ? "Weight: " + initialStatsApi.getWeight() + ", Arm: " + initialStatsApi.getArmCircumference() : "null"));
+                } else {
+                    initialStatsApi = null;
+                    Log.d("UserProfileActivity", "Initial stats API: no body or not successful. Code: " + responseInitial.code());
+                }
+                fetchHistoryData(); // Zawsze wywołuj pobieranie historii
+            }
+            @Override
+            public void onFailure(Call<BodyStatHistoryDto> call, Throwable t) {
+                initialStatsApi = null;
+                Log.e("UserProfileActivity", "Initial stats API: failure", t);
+                fetchHistoryData(); // Zawsze wywołuj pobieranie historii
+            }
+        });
+    }
+
+    private void fetchHistoryData() {
+        apiService.getBodyStatHistory(userId).enqueue(new Callback<List<BodyStatHistoryDto>>() {
+            @Override
+            public void onResponse(Call<List<BodyStatHistoryDto>> call, Response<List<BodyStatHistoryDto>> responseHistory) {
+                if (responseHistory.isSuccessful() && responseHistory.body() != null) {
+                    historyStatsApi = responseHistory.body();
+                    if (!historyStatsApi.isEmpty()) {
+                        Log.d("UserProfileActivity", "History stats API: " + historyStatsApi.size() + " entries. Last weight: " + historyStatsApi.get(historyStatsApi.size()-1).getWeight());
+                    } else {
+                        Log.d("UserProfileActivity", "History stats API: empty list.");
+                    }
+                } else {
+                    historyStatsApi = null;
+                    Log.d("UserProfileActivity", "History stats API: no body or not successful. Code: " + responseHistory.code());
+                }
+                updateUiWithApiData(); // Zawsze aktualizuj UI
+            }
+            @Override
+            public void onFailure(Call<List<BodyStatHistoryDto>> call, Throwable t) {
+                historyStatsApi = null;
+                Log.e("UserProfileActivity", "History stats API: failure", t);
+                updateUiWithApiData(); // Zawsze aktualizuj UI
+            }
+        });
+    }
+
+    private void fetchBenchPressExtremes() {
+        binding.progressBenchPressTextView.setText("Ładowanie...");
+        apiService.getExerciseExtremes(userId, EXERCISE_BENCH_PRESS_NAME).enqueue(new Callback<ExerciseExtremesDto>() {
+            @Override
+            public void onResponse(Call<ExerciseExtremesDto> call, Response<ExerciseExtremesDto> response) {
+                if (response.isSuccessful() && response.body() != null) {
+                    ExerciseExtremesDto extremes = response.body();
+                    BigDecimal initialBench = extremes.getInitialWeight();
+                    BigDecimal latestBench = extremes.getLatestWeight();
+                    Log.d("UserProfileActivity", "Bench Press: Initial=" + initialBench + ", Latest=" + latestBench);
+
+                    if (latestBench != null && initialBench != null) {
+                        BigDecimal benchProgress = latestBench.subtract(initialBench);
+                        updateProgressTextView(binding.progressBenchPressTextView, latestBench, benchProgress, "kg");
+                    } else if (latestBench != null) { // initialBench JEST null
+                        updateProgressTextView(binding.progressBenchPressTextView, latestBench, null, "kg");
+                    } else if (initialBench != null) { // latestBench jest null
+                        updateProgressTextView(binding.progressBenchPressTextView, initialBench, null, "kg");
+                    } else {
+                        binding.progressBenchPressTextView.setText("Brak danych");
+                    }
+                } else {
+                    binding.progressBenchPressTextView.setText("Błąd danych");
+                    Log.e("UserProfileActivity", "Błąd pobierania ekstremów dla wyciskania: " + response.code());
+                }
+            }
+
+            @Override
+            public void onFailure(Call<ExerciseExtremesDto> call, Throwable t) {
+                binding.progressBenchPressTextView.setText("Błąd sieci");
+                Log.e("UserProfileActivity", "Failure pobierania ekstremów dla wyciskania", t);
+            }
+        });
+    }
+
+    private void updateUiWithApiData() {
+        // Logika dla Wagi
+        BigDecimal initialWeightVal = null;
+        BigDecimal latestWeightVal = null;
+
+        // Użyj initialStatsApi jako głównego źródła danych początkowych
+        if (initialStatsApi != null && initialStatsApi.getWeight() != null) {
+            initialWeightVal = initialStatsApi.getWeight();
         }
-        goalsCursor.close();
 
-        float[] initialData = dbHelper.getInitialProfileData(userId); // [weight, armCirc]
-        float initialArmCirc = initialData[1];
+        // Pobierz najnowsze dane z historii
+        if (historyStatsApi != null && !historyStatsApi.isEmpty()) {
+            BodyStatHistoryDto latestEntry = historyStatsApi.get(historyStatsApi.size() - 1);
+            if (latestEntry.getWeight() != null) {
+                latestWeightVal = latestEntry.getWeight();
+            }
+            // Jeśli initialStatsApi nie dało wagi początkowej (np. użytkownik zarejestrował się bez wagi,
+            // a potem dodał pierwszy pomiar), użyj pierwszego wpisu z historii jako początkowego.
+            if (initialWeightVal == null && historyStatsApi.get(0).getWeight() != null) {
+                initialWeightVal = historyStatsApi.get(0).getWeight();
+            }
+        }
+        Log.d("UserProfileActivity", "Weight values for UI: Initial=" + initialWeightVal + ", Latest=" + latestWeightVal);
 
-        float weightProgress = latestData[0] - initialWeight;
-        float benchPressProgress = latestBenchPress - initialBenchPress;
+        if (latestWeightVal != null && initialWeightVal != null) {
+            BigDecimal weightProgress = latestWeightVal.subtract(initialWeightVal);
+            updateProgressTextView(binding.progressWeightTextView, latestWeightVal, weightProgress, "kg");
+        } else if (latestWeightVal != null) { // initialWeightVal JEST null
+            updateProgressTextView(binding.progressWeightTextView, latestWeightVal, null, "kg");
+        } else if (initialWeightVal != null) { // latestWeightVal jest null
+            updateProgressTextView(binding.progressWeightTextView, initialWeightVal, null, "kg");
+        } else {
+            binding.progressWeightTextView.setText("Brak danych");
+        }
 
-        Log.d("UserProfileActivity", "Initial Weight: " + initialWeight + ", Latest Weight: " + latestData[0] + ", Weight Progress: " + weightProgress);
-        Log.d("UserProfileActivity", "Initial Arm: " + initialArmCirc + ", Latest Arm: " + latestData[1]);
-        Log.d("UserProfileActivity", "Initial Bench: " + initialBenchPress + ", Latest Bench: " + latestBenchPress + ", Bench Progress: " + benchPressProgress);
+        // Logika dla Obwodu Ramienia
+        BigDecimal initialArmCircVal = null;
+        BigDecimal latestArmCircVal = null;
 
-        // Weight
+        if (initialStatsApi != null && initialStatsApi.getArmCircumference() != null) {
+            initialArmCircVal = initialStatsApi.getArmCircumference();
+        }
 
+        if (historyStatsApi != null && !historyStatsApi.isEmpty()) {
+            BodyStatHistoryDto latestEntry = historyStatsApi.get(historyStatsApi.size() - 1);
+            if (latestEntry.getArmCircumference() != null) {
+                latestArmCircVal = latestEntry.getArmCircumference();
+            }
+            if (initialArmCircVal == null && historyStatsApi.get(0).getArmCircumference() != null) {
+                initialArmCircVal = historyStatsApi.get(0).getArmCircumference();
+            }
+        }
+        Log.d("UserProfileActivity", "ArmCirc values for UI: Initial=" + initialArmCircVal + ", Latest=" + latestArmCircVal);
 
-
-        // Arm Circumference (from history)
-        List<DatabaseHelper.BodyStatEntry> history = dbHelper.getBodyStatHistory(userId);
-        if (history.size() >= 2) {
-            float firstArm = history.get(0).armCirc;
-            float lastArm = history.get(history.size() - 1).armCirc;
-            float armDelta = lastArm - firstArm;
-
-            String armText = String.format(Locale.US, "%.1f cm", lastArm);
-            String progressText = String.format(Locale.US, " (%s%.1f cm)", armDelta >= 0 ? "+" : "-", Math.abs(armDelta));
-            SpannableString spannableArm = new SpannableString(armText + progressText);
-            int start = armText.length();
-            int end = (armText + progressText).length();
-            spannableArm.setSpan(
-                    new ForegroundColorSpan(getResources().getColor(armDelta >= 0 ? R.color.green : R.color.red, getTheme())),
-                    start, end, SpannableString.SPAN_EXCLUSIVE_EXCLUSIVE
-            );
-            binding.progressArmCircTextView.setText(spannableArm);
-        } else if (history.size() == 1) {
-            float arm = history.get(0).armCirc;
-            binding.progressArmCircTextView.setText(String.format(Locale.US, "%.1f cm", arm));
+        if (latestArmCircVal != null && initialArmCircVal != null) {
+            BigDecimal armProgress = latestArmCircVal.subtract(initialArmCircVal);
+            updateProgressTextView(binding.progressArmCircTextView, latestArmCircVal, armProgress, "cm");
+        } else if (latestArmCircVal != null) { // initialArmCircVal JEST null
+            updateProgressTextView(binding.progressArmCircTextView, latestArmCircVal, null, "cm");
+        } else if (initialArmCircVal != null) { // latestArmCircVal jest null
+            updateProgressTextView(binding.progressArmCircTextView, initialArmCircVal, null, "cm");
         } else {
             binding.progressArmCircTextView.setText("Brak danych");
         }
+    }
 
-
-        // Weight progress (based on history table)
-        if (history.size() >= 2) {
-            float firstWeight = history.get(0).weight;
-            float lastWeight = history.get(history.size() - 1).weight;
-            float weightDelta = lastWeight - firstWeight;
-
-            String weightText = String.format(Locale.US, "%.1f kg", lastWeight);
-            String progressText = String.format(Locale.US, " (%s%.1f kg)", weightDelta >= 0 ? "+" : "-", Math.abs(weightDelta));
-            SpannableString spannableWeight = new SpannableString(weightText + progressText);
-            int start = weightText.length();
-            int end = (weightText + progressText).length();
-            spannableWeight.setSpan(
-                    new ForegroundColorSpan(getResources().getColor(weightDelta >= 0 ? R.color.green : R.color.red, getTheme())),
-                    start, end,
-                    SpannableString.SPAN_EXCLUSIVE_EXCLUSIVE
-            );
-            binding.progressWeightTextView.setText(spannableWeight);
-            Log.d("UserProfileActivity", "History weight progress: " + weightDelta);
-        } else if (history.size() == 1) {
-            float weight = history.get(0).weight;
-            binding.progressWeightTextView.setText(String.format(Locale.US, "%.1f kg", weight));
-            Log.d("UserProfileActivity", "Only one weight entry: " + weight);
-        } else {
-            binding.progressWeightTextView.setText("Brak danych");
-            Log.d("UserProfileActivity", "No weight history data");
+    private void updateProgressTextView(android.widget.TextView textView, BigDecimal currentValue, BigDecimal progressValue, String unit) {
+        if (currentValue == null) {
+            textView.setText("Brak danych");
+            return;
         }
 
-        // Bench Press
-        if (initialBenchPress == 0 || latestBenchPress == 0) {
-            binding.progressBenchPressTextView.setText("Brak danych");
-        } else {
-            String benchText = String.format(Locale.US, "%.1f kg", latestBenchPress);
-            String progressText = String.format(Locale.US, " (%s%.1f kg)", benchPressProgress >= 0 ? "+" : "-", Math.abs(benchPressProgress));
-            SpannableString spannableBench = new SpannableString(benchText + progressText);
-            int start = benchText.length();
-            int end = (benchText + progressText).length();
-            spannableBench.setSpan(
-                    new ForegroundColorSpan(getResources().getColor(benchPressProgress >= 0 ? R.color.green : R.color.red, getTheme())),
-                    start, end, SpannableString.SPAN_EXCLUSIVE_EXCLUSIVE
-            );
-            binding.progressBenchPressTextView.setText(spannableBench);
+        String currentValueText = String.format(Locale.US, "%.1f %s", currentValue.doubleValue(), unit);
+        String progressTextFormat = ""; // Domyślnie pusty
+
+        // Jeśli progressValue jest dostępne i różne od zera, formatuj tekst progresu
+        // Jeśli progressValue jest null (bo initialValue było null), to progressTextFormat pozostanie pusty.
+        if (progressValue != null && progressValue.compareTo(BigDecimal.ZERO) != 0) {
+            progressTextFormat = String.format(Locale.US, " (%s%.1f %s)",
+                    progressValue.compareTo(BigDecimal.ZERO) > 0 ? "+" : "-", // Znak + lub -
+                    progressValue.abs().doubleValue(), // Wartość absolutna progresu
+                    unit);
         }
+        // Jeśli progressValue to BigDecimal.ZERO, progressTextFormat również pozostanie pusty, co jest poprawne.
+
+        SpannableString spannable = new SpannableString(currentValueText + progressTextFormat);
+        if (!progressTextFormat.isEmpty()) { // Koloruj tylko jeśli jest tekst progresu
+            int color = getResources().getColor(progressValue.compareTo(BigDecimal.ZERO) >= 0 ? R.color.green : R.color.red, getTheme());
+            spannable.setSpan(new ForegroundColorSpan(color), currentValueText.length(), spannable.length(), SpannableString.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+        textView.setText(spannable);
     }
 }
